@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [{ "type": "command", "command": "session-resume hook codex" }]
+      }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "session-resume hook codex" }] }
+    ]
+  }
+}

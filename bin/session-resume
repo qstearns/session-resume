@@ -1,0 +1,80 @@
+#!/bin/sh
+# Record and forget agent sessions per Rex block.
+#
+#   session-resume record AGENT SESSION_ID CWD
+#   session-resume forget AGENT
+#   session-resume hook AGENT    (reads a Claude/Codex hook payload on stdin)
+#
+# State lives in $XDG_STATE_HOME/session-resume/<agent>/<block-id>, one
+# key=value per line. Everything is a no-op outside Rex ($REX_BLOCK unset).
+
+set -eu
+
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/session-resume"
+
+die() { echo "session-resume: $*" >&2; exit 2; }
+
+check_name() {
+	case "$1" in
+	'' | . | .. | */*) die "bad $2: '$1'" ;;
+	esac
+}
+
+# Print a top-level string field from a one-object JSON payload. Good enough
+# for UUIDs, reasons and ordinary paths; escaped quotes are not handled.
+json_field() {
+	printf '%s\n' "$2" |
+		sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+		head -n 1
+}
+
+record() {
+	agent=$1 session_id=$2 cwd=$3
+	[ -n "$session_id" ] || die "no session_id for $agent"
+	dir="$state_root/$agent"
+	mkdir -p "$dir"
+	tmp="$dir/.$REX_BLOCK.$$"
+	printf 'session_id=%s\ncwd=%s\n' "$session_id" "$cwd" >"$tmp"
+	mv -f "$tmp" "$dir/$REX_BLOCK"
+}
+
+forget() {
+	rm -f "$state_root/$1/$REX_BLOCK"
+}
+
+# Claude Code and Codex share a hook payload shape (hook_event_name,
+# session_id, cwd, and reason on SessionEnd).
+hook() {
+	agent=$1
+	payload=$(cat)
+	event=$(json_field hook_event_name "$payload")
+	case "$event" in
+	SessionStart)
+		record "$agent" "$(json_field session_id "$payload")" \
+			"$(json_field cwd "$payload")"
+		;;
+	SessionEnd)
+		# Forget only on a deliberate quit. A kill (reboot, pty closed) may
+		# still run SessionEnd, and then the file must stay. Codex always
+		# reports reason "other", so its sessions are never forgotten here.
+		case "$(json_field reason "$payload")" in
+		prompt_input_exit | logout) forget "$agent" ;;
+		esac
+		;;
+	esac
+}
+
+[ -n "${REX_BLOCK:-}" ] || exit 0
+check_name "$REX_BLOCK" block
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+agent=${1:-}
+check_name "$agent" agent
+
+case "$cmd" in
+record) [ $# -eq 3 ] || die "usage: record AGENT SESSION_ID CWD"; record "$@" ;;
+forget) [ $# -eq 1 ] || die "usage: forget AGENT"; forget "$1" ;;
+hook) [ $# -eq 1 ] || die "usage: hook AGENT"; hook "$1" ;;
+*) die "usage: session-resume record|forget|hook AGENT ..." ;;
+esac
